@@ -685,11 +685,12 @@ class RealisticHerPlugin(Star):
             self._save_state()
         if self._loop_task is None or self._loop_task.done():
             self._loop_task = asyncio.create_task(self._proactive_loop())
-        # 预生成表情包（首次）
+        # 预生成表情包：后台任务，绝不阻塞 AstrBot 启动
         if not os.listdir(_EMOTE_DIR):
-            await self._prep_emotes()
+            asyncio.create_task(self._prep_emotes())
 
     async def _prep_emotes(self) -> None:
+        """后台预生成表情包（并发 2 张，失败不阻塞）。"""
         prompts = [
             "可爱的猫猫头表情包风格贴纸，惊讶瞪眼，白色背景",
             "可爱的猫猫头表情包风格贴纸，生气嘟嘴，白色背景",
@@ -697,19 +698,25 @@ class RealisticHerPlugin(Star):
             "可爱的猫猫头表情包风格贴纸，委屈流泪，白色背景",
             "可爱的猫猫头表情包风格贴纸，得意吐舌，白色背景",
         ]
-        for i, prompt in enumerate(prompts):
-            try:
-                payload = json.dumps({"prompt": prompt, "width": 512, "height": 512}).encode("utf-8")
-                req = urllib.request.Request(_SD_SERVER, data=payload,
-                                             headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=300) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                if "image" in data:
-                    path = os.path.join(_EMOTE_DIR, f"emote_{i}.png")
-                    with open(path, "wb") as f:
-                        f.write(base64.b64decode(data["image"]))
-            except Exception:
-                break
+        sem = asyncio.Semaphore(2)
+
+        async def _one(prompt: str, idx: int) -> None:
+            async with sem:
+                try:
+                    payload = json.dumps(
+                        {"prompt": prompt, "width": 512, "height": 512}).encode("utf-8")
+                    req = urllib.request.Request(_SD_SERVER, data=payload,
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=300) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    if "image" in data:
+                        path = os.path.join(_EMOTE_DIR, f"emote_{idx}.png")
+                        with open(path, "wb") as f:
+                            f.write(base64.b64decode(data["image"]))
+                except Exception:
+                    pass
+
+        await asyncio.gather(*[_one(p, i) for i, p in enumerate(prompts)])
 
     async def terminate(self) -> None:
         if self._loop_task:
