@@ -40,7 +40,7 @@
 
 ## 依赖
 - AstrBot（星火/其他支持插件系统的版本）
-- 本地 Stable Diffusion 生图服务（`http://127.0.0.1:7862/draw`），用于主动发图与表情包；没有则自动跳过
+- 本地 Stable Diffusion 生图服务（`http://127.0.0.1:7862/draw`），仅用于主动发图；表情包素材已内置（`images/emotes/`，6 张猫猫表情，随插件分发），不需要生图
 - DeepSeek API（读取 AstrBot `cmd_config.json` 里 provider 为 deepseek 的 key）
 - 豆包 Seed Audio TTS（可选，用于发语音；没有则全部发文字）
 - 虚拟人生插件（可选，仅用于读取"睡觉"时段，避免打扰）
@@ -48,7 +48,7 @@
 ## 安装
 1. 将本插件目录放入 AstrBot 插件目录（`core/data/plugins/`）；
 2. 重启 AstrBot（或热重载）；
-3. 首次启动会自动用本地生图服务预制 5 张猫猫表情包。
+3. 表情包素材已内置，无需额外生成；若素材目录为空且有本地生图服务，插件会后台自动补生成。
 
 ## 自定义
 `main.py` 顶部有几个常量可按自己环境调整：

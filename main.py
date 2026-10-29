@@ -610,7 +610,8 @@ class RealisticHerPlugin(Star):
             pass
 
     async def _send_emote(self, umo: str) -> None:
-        emotes = [f for f in os.listdir(_EMOTE_DIR) if f.endswith(".png")]
+        emotes = [f for f in os.listdir(_EMOTE_DIR)
+                  if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif"))]
         if not emotes:
             return
         path = os.path.join(_EMOTE_DIR, random.choice(emotes))
