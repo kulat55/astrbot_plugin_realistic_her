@@ -333,6 +333,59 @@ class RealisticHerPlugin(Star):
         except Exception:
             return None
 
+    def _parse_reminder_time(self, target: str, now: datetime) -> datetime | None:
+        """解析 /约定 的自然时间：明早8点 / 今晚10点 / 8点30 / 8点 → 具体时间。"""
+        import re
+        t = str(target).strip()
+        hour = minute = None
+        is_night = False
+        m = re.search(r"(明早|明晚|明|今晚|今天|早上|晚上)?\s*(\d{1,2})\s*[:：]\s*(\d{1,2})", t)
+        if m:
+            hour, minute = int(m.group(2)), int(m.group(3))
+        else:
+            m = re.search(r"(明早|明晚|明|今晚|今天|早上|晚上)?\s*(\d{1,2})\s*点\s*(\d{1,2})?", t)
+            if m:
+                hour, minute = int(m.group(2)), int(m.group(3) or 0)
+        if hour is None or not (0 <= hour <= 23):
+            return None
+        if minute is None:
+            minute = 0
+        # "今晚/明晚" + 12 以内的小时 → 晚上时间
+        if ("晚" in t and ("今" in t or "明" in t)) and 1 <= hour <= 12:
+            hour += 12
+        day_offset = 0
+        if "明" in t and "今" not in t:
+            day_offset = 1
+        dt = now + timedelta(days=day_offset)
+        dt = dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if dt <= now:
+            dt += timedelta(days=1)
+        return dt
+
+    async def _check_reminder_times(self, umo: str, now: datetime) -> bool:
+        """到点的 /约定 提醒（每个提醒每天只提醒一次）。"""
+        sent = False
+        today = now.date().isoformat()
+        for rem in self._state["reminders"]:
+            if rem.get("kind") != "reminder":
+                continue
+            if rem.get("sent_at", "") == today:
+                continue
+            target_dt = self._parse_reminder_time(rem.get("target", ""), now)
+            if not target_dt:
+                continue
+            if target_dt.date() == now.date() and target_dt.hour == now.hour \
+                    and now.minute < 10 and target_dt <= now + timedelta(minutes=10):
+                text = self._llm_text(
+                    f"你答应过的事到点了：{rem.get('text')}（约的{rem.get('target')}），"
+                    f"发条消息提醒他，自然一点。"
+                ) or f"到点了哦：{rem.get('text')}"
+                if await self._send_maybe_voice(umo, text):
+                    rem["sent_at"] = today
+                    sent = True
+                    self._save_state()
+        return sent
+
     # ---------- 主动调度 ----------
     async def _proactive_loop(self) -> None:
         while True:
@@ -355,6 +408,11 @@ class RealisticHerPlugin(Star):
             if sess["sent_today"] >= 2:
                 continue
             if self._is_sleeping():
+                continue
+            # /约定 到点提醒（独立于条数限制，不打扰睡眠时段）
+            if 7 <= now.hour < 23 and await self._check_reminder_times(umo, now):
+                sess["sent_today"] += 1
+                self._save_state()
                 continue
             last_user = sess.get("last_user_at", "")
             if not last_user:
