@@ -405,9 +405,12 @@ class RealisticHerPlugin(Star):
             return None
         if minute is None:
             minute = 0
-        # "今晚/明晚" + 12 以内的小时 → 晚上时间
-        if ("晚" in t and ("今" in t or "明" in t)) and 1 <= hour <= 12:
+        # "晚" 字（晚上/今晚/明晚）+ 12 以内的小时 → 晚上时间；24 点归零跨天
+        if "晚" in t and 1 <= hour <= 12:
             hour += 12
+            if hour == 24:
+                hour = 0
+                day_offset += 1
         day_offset = 0
         if "明" in t and "今" not in t:
             day_offset = 1
