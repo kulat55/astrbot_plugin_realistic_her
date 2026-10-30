@@ -121,19 +121,30 @@ def _read_deepseek_key() -> str | None:
 
 
 def _read_tts_config() -> dict | None:
-    """从 AstrBot cmd_config 读取豆包语音配置（值绝不外泄）。"""
+    """从 AstrBot cmd_config 读取豆包语音配置（值绝不外泄）。
+
+    cmd_config 里豆包 TTS 的配置在顶层 `provider` 数组中
+    （type=="seed_audio_tts"，如"大肥鱼语音-豆包"），不在 provider_sources。
+    """
     try:
         with open(_CMD_CONFIG, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        for src in cfg.get("provider_sources", []):
-            if src.get("type", "") == "seed_audio_tts" and src.get("app_id"):
+        candidates = []
+        providers = cfg.get("provider", [])
+        if isinstance(providers, dict):
+            providers = [providers]
+        candidates.extend(providers)
+        candidates.extend(cfg.get("provider_sources", []))
+        for p in candidates:
+            if isinstance(p, dict) and p.get("type", "") == "seed_audio_tts" \
+                    and p.get("app_id"):
                 return {
-                    "app_id": str(src["app_id"]),
-                    "access_key": str(src.get("access_key", "")),
-                    "api_base": str(src.get("api_base", "") or
+                    "app_id": str(p["app_id"]),
+                    "access_key": str(p.get("access_key", "")),
+                    "api_base": str(p.get("api_base", "") or
                                     "https://openspeech.bytedance.com/api/v3/tts/create"),
-                    "resource_id": str(src.get("resource_id", "") or "seed-audio-1.0"),
-                    "model": str(src.get("model", "") or "seed-audio-1.0"),
+                    "resource_id": str(p.get("resource_id", "") or "seed-audio-1.0"),
+                    "model": str(p.get("model", "") or "seed-audio-1.0"),
                 }
     except Exception:
         pass
