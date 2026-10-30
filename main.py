@@ -209,6 +209,61 @@ class RealisticHerPlugin(Star):
         except Exception:
             return False
 
+    def _plan_context(self) -> str:
+        """读虚拟人生当日日程，返回当前状态上下文，让主动消息与人设一致。"""
+        try:
+            today = _now().date().isoformat()
+            with open(_PLANS_FILE, "r", encoding="utf-8") as f:
+                plans = json.load(f).get("plans", {})
+            plan = None
+            for key, p in plans.items():
+                if str(key).startswith(today):
+                    plan = p
+                    break
+            if not plan:
+                return "（今天还没有日程安排，别编造你在做什么或在哪）"
+            if plan.get("status") == "failed" or not plan.get("timeline"):
+                return "（今天你的日程没生成出来，别编造你在做什么、在哪、吃什么）"
+            now_min = _now().hour * 60 + _now().minute
+            for item in plan.get("timeline", []):
+                start = item.get("start", "")
+                end = item.get("end", "")
+                if ":" not in start or ":" not in end:
+                    continue
+                sh, sm = map(int, start.split(":"))
+                eh, em = map(int, end.split(":"))
+                if sh * 60 + sm <= now_min < eh * 60 + em:
+                    if item.get("state") == "sleep":
+                        return "（你现在在睡觉）"
+                    act = item.get("activity", "")
+                    loc = item.get("location", "")
+                    state = f"你现在正在{act}" if act else "你正在进行今天的安排"
+                    if loc:
+                        state += f"，在{loc}"
+                    return f"（{state}）"
+            return ""
+        except Exception:
+            return ""
+
+    def _vl_recent_proactive(self, now: datetime, minutes: int = 45) -> bool:
+        """虚拟人生最近是否刚发过主动消息；在窗口内主动谦让，避免双系统撞车。"""
+        try:
+            fp = os.path.join(os.path.dirname(_PLANS_FILE), "sessions.json")
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for sess in data.get("sessions", {}).values():
+                last = sess.get("last_proactive_at", "")
+                if not last:
+                    continue
+                dt = datetime.fromisoformat(last)
+                if dt.tzinfo:
+                    dt = dt.astimezone().replace(tzinfo=None)
+                if (now - dt).total_seconds() / 60 < minutes:
+                    return True
+            return False
+        except Exception:
+            return False
+
     def _llm_text(self, prompt: str, max_tokens: int = 200) -> str | None:
         """调用 deepseek-chat 生成文本。"""
         key = _read_deepseek_key()
@@ -397,6 +452,7 @@ class RealisticHerPlugin(Star):
 
     async def _check_proactive(self) -> None:
         now = _now()
+        plan_ctx = self._plan_context()
         sessions = list(self._state["sessions"].items())
         for umo, sess in sessions:
             if "FriendMessage" not in umo:
@@ -414,6 +470,9 @@ class RealisticHerPlugin(Star):
                 sess["sent_today"] += 1
                 self._save_state()
                 continue
+            # 虚拟人生刚发过主动消息（45 分钟内）：谦让，避免双主动撞车人设矛盾
+            if self._vl_recent_proactive(now, 45):
+                continue
             last_user = sess.get("last_user_at", "")
             if not last_user:
                 continue
@@ -423,7 +482,7 @@ class RealisticHerPlugin(Star):
             # 1. 失联反应：>=48 小时没联系，每天最多一次
             if idle_hours >= 48 and sess.get("last_missing_at", "") != today:
                 text = self._llm_text(
-                    f"你好几天没找我了，现在想发一条消息给他，有点小情绪但不说太重的话。"
+                    f"{plan_ctx}你好几天没找我了，现在想发一条消息给他，有点小情绪但不说太重的话。"
                     f"（最近一次联系是 {int(idle_hours)} 小时前）"
                 ) or "这几天怎么没找我？我还以为你人间蒸发了。"
                 if await self._send_maybe_voice(umo, text):
@@ -436,7 +495,7 @@ class RealisticHerPlugin(Star):
             # 2. 反向查岗：空闲 3-12 小时，每天 0-1 次
             if 3 <= idle_hours <= 12 and random.random() < 0.35:
                 text = self._llm_text(
-                    f"现在 {now.strftime('%H:%M')}，你半天没找我，我发条消息问你在干嘛，自然一点。"
+                    f"{plan_ctx}现在 {now.strftime('%H:%M')}，你半天没找我，我发条消息问你在干嘛，自然一点。"
                 ) or "在干嘛呢？半天没动静。"
                 if await self._send_maybe_voice(umo, text):
                     sess["sent_today"] += 1
@@ -449,7 +508,8 @@ class RealisticHerPlugin(Star):
                 weather = self._weather_now()
                 if weather:
                     text = self._llm_text(
-                        f"现在外面{weather}，你随便说一句跟天气有关的日常话，别太刻意。"
+                        f"{plan_ctx}现在外面{weather}，你随口说一句天气感受，只聊天气本身，"
+                        f"别说自己正在做什么、要去哪、在吃什么。"
                     ) or f"今天{weather}，出门记得看天气啊。"
                     if await self._send_maybe_voice(umo, text):
                         sess["last_weather_at"] = today
@@ -475,7 +535,7 @@ class RealisticHerPlugin(Star):
                     hobby["progress"] += 1
                     hobby["updated_at"] = now.isoformat()
                     text = self._llm_text(
-                        f"你最近在{hobby.get('type', '追剧')}，进度到{hobby.get('progress')}了，"
+                        f"{plan_ctx}你最近在{hobby.get('type', '追剧')}，进度到{hobby.get('progress')}了，"
                         f"主动跟朋友聊一句你的爱好进展。"
                     )
                     if text and await self._send_maybe_voice(umo, text):
@@ -488,7 +548,7 @@ class RealisticHerPlugin(Star):
                 if rem.get("kind") == "date" and rem.get("target") == today_str \
                         and rem.get("sent_at", "") != today:
                     text = self._llm_text(
-                        f"今天是特别的日子：{rem.get('text')}，你发条消息跟他说，带点在意。"
+                        f"{plan_ctx}今天是特别的日子：{rem.get('text')}，你发条消息跟他说，带点在意。"
                     ) or f"今天是不是{rem.get('text')}？我记着的。"
                     if await self._send_maybe_voice(umo, text):
                         rem["sent_at"] = today
@@ -502,7 +562,7 @@ class RealisticHerPlugin(Star):
                 bad_at = datetime.fromisoformat(mood["bad_at"])
                 if (now - bad_at).days >= 1:
                     text = self._llm_text(
-                        f"他昨天/前几天好像心情不好（{mood.get('reason', '')}），"
+                        f"{plan_ctx}他昨天/前几天好像心情不好（{mood.get('reason', '')}），"
                         f"你现在主动关心一下他，别太肉麻。"
                     ) or "昨天看你好像不太开心，现在好点了吗？"
                     if await self._send_maybe_voice(umo, text):
@@ -524,7 +584,7 @@ class RealisticHerPlugin(Star):
                     "傍晚的天空，粉色晚霞，手机随手拍",
                     "一只橘猫蹲在台阶上晒太阳",
                 ])
-                text = self._llm_text("你随手拍了张照想发给朋友，配一句简单的话。") or "刚随手拍的，好看吗？"
+                text = self._llm_text(f"{plan_ctx}你随手拍了张照想发给朋友，配一句简单的话。") or "刚随手拍的，好看吗？"
                 if await self._draw_and_send(umo, prompt):
                     sess["sent_today"] += 1
                     sess["last_proactive_at"] = _now().isoformat()
